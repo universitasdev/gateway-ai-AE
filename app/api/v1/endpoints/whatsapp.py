@@ -150,10 +150,11 @@ async def whatsapp_webhook(request: Request) -> Response:
 
     # ── Query the AI agent ──────────────────────────────────────
     try:
-        agent_reply = agent_service.query_agent(
+        reply = agent_service.query_agent(
             message=user_text,
             session_id=phone_number,
         )
+        agent_reply = reply.text
     except Exception:
         logger.exception(
             "Agent query failed for WhatsApp phone=%s", phone_number

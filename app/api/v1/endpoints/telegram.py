@@ -84,10 +84,11 @@ async def telegram_webhook(request: Request) -> Response:
     # ── Query the AI agent ──────────────────────────────────────
     try:
         session_id = str(chat_id)
-        agent_reply = agent_service.query_agent(
+        reply = agent_service.query_agent(
             message=text,
             session_id=session_id,
         )
+        agent_reply = reply.text
     except Exception:
         logger.exception("Agent query failed for Telegram chat_id=%s", chat_id)
         agent_reply = "Lo siento, hubo un error procesando tu mensaje. Intenta de nuevo."
