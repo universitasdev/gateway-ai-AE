@@ -66,6 +66,8 @@ A continuación se listan los comandos más utilizados para operar el proyecto:
     -H "Content-Type: application/json" \
     -d '{"message": "Hola, ¿qué puedes hacer?", "session_id": "test-123"}'
   ```
+  Respuesta incluye `message_id` (UUID) y opcionalmente `usage` (tokens).  
+  Feedback: `POST /api/feedback` con `{ "message_id", "session_id", "feedback_score": 1|-1 }`.
 - **Construir y desplegar a Cloud Run directamente:**
   ```bash
   gcloud run deploy gateway --source . --region us-central1 --allow-unauthenticated

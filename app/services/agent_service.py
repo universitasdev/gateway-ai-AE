@@ -7,6 +7,7 @@ endpoint code never touches the SDK directly.
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import google.auth
@@ -16,6 +17,14 @@ import requests
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AgentReply:
+    """Plain text reply plus optional token usage (FinOps via BigQuery later)."""
+
+    text: str
+    usage: Optional[dict] = None
 
 
 class AgentService:
@@ -121,11 +130,39 @@ class AgentService:
         if code and message and "content" not in data and "output" not in data:
             raise RuntimeError(f"Agent Engine error {code}: {message}")
 
-    def _parse_stream_response(self, response: requests.Response) -> str:
-        """Parse NDJSON / SSE chunks from :streamQuery into plain text."""
+    def _parse_stream_response(self, response: requests.Response) -> AgentReply:
+        """Parse NDJSON / SSE chunks from :streamQuery into text + optional usage."""
         text = response.text.strip()
         if not text:
-            return ""
+            return AgentReply(text="")
+
+        usage_acc: dict = {}
+
+        def merge_usage(chunk: dict) -> None:
+            raw = (
+                chunk.get("usage")
+                or chunk.get("usageMetadata")
+                or chunk.get("usage_metadata")
+            )
+            if not isinstance(raw, dict):
+                return
+            mapping = {
+                "input_tokens": ("input_tokens", "promptTokenCount", "prompt_tokens"),
+                "output_tokens": (
+                    "output_tokens",
+                    "candidatesTokenCount",
+                    "completion_tokens",
+                ),
+                "total_tokens": ("total_tokens", "totalTokenCount"),
+            }
+            for out_key, aliases in mapping.items():
+                for alias in aliases:
+                    if alias in raw and raw[alias] is not None:
+                        try:
+                            usage_acc[out_key] = int(raw[alias])
+                        except (TypeError, ValueError):
+                            pass
+                        break
 
         # Single JSON object (error or non-streamed payload)
         if text.startswith("{"):
@@ -133,14 +170,20 @@ class AgentService:
                 data = json.loads(text)
                 self._raise_if_error_payload(data)
                 if isinstance(data, dict):
+                    merge_usage(data)
+                    reply_text = ""
                     if "output" in data:
-                        return str(data["output"])
-                    if "text" in data:
-                        return str(data["text"])
-                    if "content" in data and "parts" in data.get("content", {}):
+                        reply_text = str(data["output"])
+                    elif "text" in data:
+                        reply_text = str(data["text"])
+                    elif "content" in data and "parts" in data.get("content", {}):
                         parts = data["content"]["parts"]
                         if parts and "text" in parts[0]:
-                            return parts[0]["text"]
+                            reply_text = parts[0]["text"]
+                    return AgentReply(
+                        text=reply_text,
+                        usage=usage_acc or None,
+                    )
             except json.JSONDecodeError:
                 pass
 
@@ -161,6 +204,7 @@ class AgentService:
                 continue
 
             self._raise_if_error_payload(data)
+            merge_usage(data)
 
             if "output" in data:
                 full_response += str(data["output"])
@@ -171,9 +215,9 @@ class AgentService:
                 if parts and "text" in parts[0]:
                     full_response += parts[0]["text"]
 
-        return full_response
+        return AgentReply(text=full_response, usage=usage_acc or None)
 
-    def query_agent(self, prompt: str, session_id: Optional[str] = None) -> str:
+    def query_agent(self, prompt: str, session_id: Optional[str] = None) -> AgentReply:
         """Query the ADK Agent Engine via :streamQuery (async_stream_query)."""
         try:
             user_id = session_id or "default-user"
@@ -199,10 +243,13 @@ class AgentService:
             )
             response.raise_for_status()
 
-            full_response = self._parse_stream_response(response)
-            if not full_response:
-                return "El agente no devolvió ninguna respuesta (vacío)."
-            return full_response
+            reply = self._parse_stream_response(response)
+            if not reply.text:
+                return AgentReply(
+                    text="El agente no devolvió ninguna respuesta (vacío).",
+                    usage=reply.usage,
+                )
+            return reply
 
         except requests.exceptions.RequestException as e:
             logger.error(f"HTTP Error querying agent: {str(e)}")
@@ -221,6 +268,6 @@ def init() -> None:
     _agent_service.init()
 
 
-def query_agent(message: str, session_id: str) -> str:
+def query_agent(message: str, session_id: str) -> AgentReply:
     """Module-level wrapper for query_agent."""
     return _agent_service.query_agent(message, session_id)
